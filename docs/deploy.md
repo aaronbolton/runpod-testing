@@ -1,55 +1,48 @@
 # Deploy Qwen3.8-27B Q4_K_M on RunPod Serverless
 
-The short path. Uses RunPod's model cache, one RTX 5090, llama.cpp with the
-vision projector. For the reasoning behind the numbers see
-`llamacpp-runpod-qwen38-27b.md`; for what was wrong with the previous plan see
-`review.md`.
+Uses the worker in this repo, RunPod's model cache, and one RTX 5090.
+For the reasoning behind the numbers see `llamacpp-runpod-qwen38-27b.md`;
+for why the Hub's prebuilt workers don't work see `review.md`.
 
 | | |
 | --- | --- |
 | Model | `Abiray/Qwen3.8-27B-Q4_K_M-GGUF` — 17.74 GB, two files, vision projector included |
 | GPU | RTX 5090 (32 GB, pool `ADA_32_PRO`, $1.58/GPU-hr serverless, CUDA 12.8) |
 | Context | 32,768 to start (~20 GB total). 262,144 is possible — see step 5 |
-| Worker | `ViniciosLugli/runpod-serverless`, rebuilt against current llama.cpp |
+| Worker | this repo — `Dockerfile` + `src/`, built by GitHub Actions |
 
-## Step 0 — why you have to build an image
+## Step 0 — why this repo exists
 
-You cannot deploy this from the Hub as-is. Both published llama.cpp workers were
-built before Qwen3.8-27B was released (2026-05-29 and 2026-06-14 vs 2026-08-05),
-and their Dockerfiles pull the mutable `ghcr.io/ggml-org/llama.cpp:server-cuda`
-tag at build time. The llama.cpp inside them has no `qwen3_5` support and will
-fail at model load.
+You cannot deploy this model from the RunPod Hub. Both published llama.cpp
+workers build `FROM ghcr.io/ggml-org/llama.cpp:server-cuda` — a mutable tag
+resolved at image build time — and their listed release images were built
+2026-05-29 and 2026-06-14, before Qwen3.8-27B was released on 2026-08-05. The
+llama.cpp inside them has no `qwen3_5` support and fails at model load.
 
-The fix is one line — pin the base image to a build that postdates the model.
-Everything else about the worker is fine.
+So the image has to be built against a current llama.cpp. This repo does that
+and nothing else: a pinned base, ~200 lines of worker, and a workflow.
 
-## Step 1 — get an image built
+## Step 1 — build the image
 
-**Option A (no local Docker).** Fork `ViniciosLugli/runpod-serverless`, change
-line 2 of its `Dockerfile`:
+Push to any branch, or run **Actions → build worker image → Run workflow**. The
+workflow runs the unit tests, then builds and pushes to:
 
-```diff
--FROM ghcr.io/ggml-org/llama.cpp:server-cuda
-+FROM ghcr.io/ggml-org/llama.cpp:server-cuda-b10588
+```
+ghcr.io/aaronbolton/runpod-testing/llamacpp-worker:latest
 ```
 
-Then in RunPod: **New Endpoint → GitHub**, pick your fork. RunPod builds it.
-(Limits: 30 min for `docker build`, 80 GB image. This image is well inside both.)
+To rebuild against a newer llama.cpp, run the workflow manually and set
+`llama_tag` (e.g. `server-cuda-b10600`). Anything ≥ `b10430` — the build the
+GGUF was quantized with — should load this model. That input is the only knob
+that matters over time; the rest of the image is stable.
 
-**Option B (local Docker).** `deploy/Dockerfile` in this repo does the same
-thing standalone:
+**GHCR packages are private by default.** Either make the package public
+(package settings → change visibility) or add a registry credential to the
+RunPod endpoint, otherwise the worker cannot pull its own image.
 
-```bash
-docker build -t <your-registry>/llamacpp-qwen38:b10588 deploy/
-docker push  <your-registry>/llamacpp-qwen38:b10588
-```
+## Step 2 — create the endpoint
 
-Then **New Endpoint → Docker** with that image.
-
-Pin a newer `server-cuda-b*` tag if one has shipped; anything ≥ `b10430` (the
-build the GGUF was quantized with) should load the model.
-
-## Step 2 — endpoint settings
+**New Endpoint → Docker**, with the image from step 1.
 
 | Setting | Value |
 | --- | --- |
@@ -61,47 +54,45 @@ build the GGUF was quantized with) should load the model.
 | **Model** | `Abiray/Qwen3.8-27B-Q4_K_M-GGUF` |
 
 The **Model** field is the model cache. RunPod mirrors the whole repo snapshot
-to the host before the worker starts, so both the GGUF and the projector are on
-local disk and you are not billed for the download. No network volume needed.
+to host disk before the worker starts, so both the GGUF and the projector are
+local and you are not billed for the download. No network volume needed.
 
 ## Step 3 — environment variables
 
-Six. That is the whole configuration.
+Five. That is the whole configuration.
 
 ```bash
-LLAMA_CACHED_MODEL=Abiray/Qwen3.8-27B-Q4_K_M-GGUF
-LLAMA_CACHED_GGUF_PATH=Qwen3.8-27B-Q4_K_M.gguf
-LLAMA_CACHED_MMPROJ_PATH=mmproj-F16.gguf
-LLAMA_SERVER_CMD_ARGS=--ctx-size 32768 --parallel 1 -ngl all --no-webui
-LLAMA_STARTUP_TIMEOUT_SECONDS=600
-MAX_CONCURRENCY=1
+MODEL_REPO=Abiray/Qwen3.8-27B-Q4_K_M-GGUF
+MODEL_FILE=Qwen3.8-27B-Q4_K_M.gguf
+MMPROJ_FILE=mmproj-F16.gguf
+LLAMA_ARGS=--ctx-size 32768 --parallel 1 -ngl all --no-webui
+STARTUP_TIMEOUT=600
 ```
 
-Everything else stays at its default. `LLAMA_STARTUP_TIMEOUT_SECONDS` is the one
-non-obvious entry: the default of 120 s is not enough to load 17 GB and the
-worker will kill itself mid-load without it.
+`MODEL_REPO` must match the endpoint's **Model** field — that is how the worker
+finds the cached snapshot. `STARTUP_TIMEOUT` matters because 17 GB takes a while
+to load and the worker will not wait forever by default.
 
-Four rules the launcher enforces, all of which will abort startup:
+Optional: `MAX_CONCURRENCY` (default 1), `MODEL_PATH` / `MMPROJ_PATH` to point at
+files on a network volume instead of the cache, `HF_CACHE_DIR` if RunPod ever
+moves the cache, `MODEL_NAME` to override the model id echoed in responses.
 
-- no `--port` in the args (3098 is worker-managed)
-- no `-m` / `--model` / `-hf` in the args while `LLAMA_CACHED_MODEL` is set
-- no `--mmproj` in the args while `LLAMA_CACHED_MMPROJ_PATH` is set
-- only one of the three `*MMPROJ*` variables at a time
+The worker builds `-m`, `--mmproj`, `--host` and `--port` itself and rejects
+them in `LLAMA_ARGS` rather than silently producing a duplicate argument.
 
-Note what is *not* in the args: `--batch-size`, `--ubatch-size`, `--jinja` and
-`--no-context-shift` are all already the upstream defaults, and `--threads` is
-better left on auto.
+Note what is *not* in `LLAMA_ARGS`: `--batch-size`, `--ubatch-size`, `--jinja`
+and `--no-context-shift` are all already the upstream defaults, and `--threads`
+is better left on auto.
 
 ## Step 4 — check it came up
 
 In the first worker's logs:
 
-1. `Running /app/llama-server -m /runpod-volume/huggingface-cache/hub/...` —
-   cache hit. If you see a download instead, the **Model** field is wrong and
-   you are paying for the transfer.
-2. `--mmproj` on that same line, and a vision encoder load below it.
-3. `n_ctx = 32768`.
-4. `server is listening on http://0.0.0.0:3098`.
+1. `worker: exec /app/llama-server -m /runpod-volume/huggingface-cache/hub/...`
+   — cache hit, with `--mmproj` on the same line. If the path is wrong the
+   worker fails immediately and lists the files it did find.
+2. `n_ctx = 32768` in llama.cpp's context dump.
+3. `worker: llama-server ready on http://127.0.0.1:8080`.
 
 Then:
 
@@ -124,13 +115,29 @@ curl -X POST https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync \
       ]}], "max_tokens": 256}}'
 ```
 
+### Response shape
+
+The handler is a streaming handler, so RunPod returns `output` as a **list**.
+A non-streaming request yields exactly one element:
+
+```bash
+... | jq '.output[0].choices[0].message.content'
+```
+
+Add `"stream": true` to the input and use `/run` plus
+`/stream/<JOB_ID>` to get chunks as they are produced; `/runsync` still works
+and returns the whole list at the end.
+
+`{"input": {"openai_route": "/v1/embeddings", "openai_input": {...}}}` reaches
+any other llama-server route directly.
+
 ## Step 5 — only then, raise the context
 
 32k costs 1.14 GB of KV cache. The model's full 262,144 costs 9.13 GB and needs
 a quantized cache to fit at all:
 
 ```bash
-LLAMA_SERVER_CMD_ARGS=--ctx-size 262144 --parallel 1 -ngl all -fa on -ctk q8_0 -ctv q8_0 --no-webui
+LLAMA_ARGS=--ctx-size 262144 --parallel 1 -ngl all -fa on -ctk q8_0 -ctv q8_0 --no-webui
 ```
 
 That lands at roughly 28.5 GB of 32 GB. `-fa on` is not optional there —
@@ -144,9 +151,11 @@ Intermediate values are the sensible move: 65,536 costs 2.3 GB, 131,072 costs
 
 | Symptom | Cause |
 | --- | --- |
-| `unknown model architecture` / `qwen3_5` at load | base image predates the model — step 1 |
-| `no kernel image is available for execution on the device` | image lacks Blackwell `sm_120` kernels; use a newer `server-cuda-b*` |
-| `llama-server did not start within N seconds` | `LLAMA_STARTUP_TIMEOUT_SECONDS` still at 120 |
-| Worker exits 1 immediately | launcher validation — recheck the four rules in step 3 |
-| Model downloads on every cold start | **Model** field empty or misspelled |
+| `unknown model architecture` / `qwen3_5` | base image predates the model — rebuild with a newer `llama_tag` |
+| `no kernel image is available for execution on the device` | image lacks Blackwell `sm_120` kernels; newer `llama_tag` |
+| `No cached snapshot for ...` | endpoint **Model** field empty, or `MODEL_REPO` disagrees with it |
+| `MODEL_FILE=... is not in ...` | filename typo; the error lists what is actually in the snapshot |
+| `llama-server was not ready within 600s` | raise `STARTUP_TIMEOUT` |
+| `LLAMA_ARGS must not set [...]` | you passed a flag the worker builds itself |
+| `llama-server exited with code N, stopping` | it died after startup; the worker exits so RunPod recycles it |
 | OOM at 262k | `-fa on` missing, so the V cache fell back to f16 |
