@@ -1,7 +1,13 @@
 # Serverless llama.cpp on RunPod — Qwen3.8-27B Q4_K_M (vision, 262k ctx, RTX 5090)
 
-Deployment-ready configuration for a single-slot, inference-only llama.cpp
-serverless endpoint with a pre-cached HuggingFace GGUF.
+Reference notes for a single-slot, inference-only llama.cpp serverless endpoint
+with a pre-cached HuggingFace GGUF.
+
+> **Start with [`deploy.md`](deploy.md), not this file.** This document's
+> analysis holds up, but its deployment path does not: §1.3 offers two ways to
+> reach a prebuilt Hub image that was built before Qwen3.8-27B existed and
+> cannot load it. `deploy.md` is the working path. [`review.md`](review.md)
+> records what was checked and what was wrong.
 
 | Item | Value |
 | --- | --- |
@@ -23,12 +29,17 @@ serverless endpoint with a pre-cached HuggingFace GGUF.
 fine-tuning accelerator (LoRA/QLoRA patching of `transformers`). It has no
 inference path into llama.cpp, cannot load or accelerate GGUF, and installing
 it in the worker adds a multi-GB torch dependency that never executes. The only
-legitimate appearance of the name here is as a *quant publisher* —
-`launcher.py` falls back to `-hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS` when
-`LLAMA_SERVER_CMD_ARGS` is unset, and that is just a HuggingFace repo hosting
-GGUF files, not the Unsloth runtime. (The Hub form's own default for that field
-is `--ctx-size 4096 -ngl 999`, with no `-hf` at all.) §4 always sets the
-variable, so the fallback never fires. Inference-only
+legitimate appearance of the name here is as a *quant publisher*, in three
+different defaults that are easy to confuse:
+
+| Where | Default for `LLAMA_SERVER_CMD_ARGS` |
+| --- | --- |
+| `Jacob-ML/inference-worker` v1.2.3 | `-hf unsloth/gemma-3-270m-it-GGUF:Q6_K --ctx-size 4096 -ngl 999` |
+| `ViniciosLugli/runpod-serverless` v0.1.7 | `--ctx-size 4096 -ngl 999` — no `-hf` |
+| `launcher.py`, variable unset | `-hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS --ctx-size 512 -ngl 999` |
+
+All three name a HuggingFace repo hosting GGUF files, not the Unsloth runtime.
+§4 always sets the variable, so none of them fires. Inference-only
 alternatives if you were considering Unsloth for throughput: llama.cpp's own
 flash-attention kernels (`-fa on`, already in this config), quantized KV cache
 (already in this config), or a different serving engine (vLLM/SGLang) if you
@@ -46,7 +57,10 @@ community llama.cpp serverless repos and neither is published by
 This document targets `ViniciosLugli/runpod-serverless` because the projector
 is a hard requirement. Both are built on `ghcr.io/ggml-org/llama.cpp:server-cuda`.
 
-**1.3 — The listed Hub release will not offer you an RTX 5090.** The currently
+**1.3 — The listed Hub release will not offer you an RTX 5090.** *(Superseded:
+both workarounds below run a prebuilt image that cannot load this model. See
+`review.md` B1 and use `deploy.md`. The GPU-filtering analysis itself is
+accurate.)* The currently
 listed release (`v0.1.7`) pins `gpuIds: AMPERE_16,AMPERE_24,ADA_24`. The 5090
 lives in pool `ADA_32_PRO` and is therefore filtered out of the Hub deploy
 form, even though the repo's `main` branch `hub.json` has since added
@@ -214,11 +228,11 @@ What actually runs inside the container:
 | `-ngl 999` | full offload; anything left on CPU destroys throughput at this context length |
 | `-fa on` | **required** — llama.cpp will not run a quantized V cache without flash attention. Also the largest single memory saving in the attention path |
 | `--cache-type-k q8_0` / `--cache-type-v q8_0` | the requested q8 precision; halves 17.18 GB to 9.13 GB and is what makes this fit (§2) |
-| `--batch-size 2048` / `--ubatch-size 512` | prefill throughput without inflating the compute buffer into the 3 GB of headroom |
-| `--no-context-shift` | context shift is unsupported for hybrid/recurrent architectures. Explicitly set so an overflow returns a clean error instead of degrading silently |
+| `--batch-size 2048` / `--ubatch-size 512` | *both are the upstream defaults — these restate them.* Leaving them off is identical; raising `-ub` inflates the compute buffer into the 3 GB of headroom |
+| `--no-context-shift` | *no-op — context shift is already disabled by default.* Harmless, but it is not what keeps an overflow clean |
 | `--no-webui` | no interactive UI on a serverless endpoint; the worker talks to `/v1/*` over localhost |
-| `--jinja` | uses the chat template embedded in the GGUF — needed for correct Qwen3.8 turn formatting and tool calls |
-| `--threads 8` | CPU threads for the non-offloaded remainder; harmless with full offload |
+| `--jinja` | *no-op — enabled by default.* Does select the GGUF's embedded chat template, which is what Qwen3.8 turn formatting and tool calls need |
+| `--threads 8` | *pins what the default (`-1`, auto) would pick better.* Irrelevant with full offload — drop it |
 
 ---
 
