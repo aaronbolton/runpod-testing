@@ -23,10 +23,12 @@ serverless endpoint with a pre-cached HuggingFace GGUF.
 fine-tuning accelerator (LoRA/QLoRA patching of `transformers`). It has no
 inference path into llama.cpp, cannot load or accelerate GGUF, and installing
 it in the worker adds a multi-GB torch dependency that never executes. The only
-legitimate appearance of the name here is as a *quant publisher* — the stock
-worker template ships `-hf unsloth/gemma-3-270m-it-GGUF:Q6_K` as its default
-argument, and that is just a HuggingFace repo hosting GGUF files, not the
-Unsloth runtime. Replace that default entirely (§4). Inference-only
+legitimate appearance of the name here is as a *quant publisher* —
+`launcher.py` falls back to `-hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS` when
+`LLAMA_SERVER_CMD_ARGS` is unset, and that is just a HuggingFace repo hosting
+GGUF files, not the Unsloth runtime. (The Hub form's own default for that field
+is `--ctx-size 4096 -ngl 999`, with no `-hf` at all.) §4 always sets the
+variable, so the fallback never fires. Inference-only
 alternatives if you were considering Unsloth for throughput: llama.cpp's own
 flash-attention kernels (`-fa on`, already in this config), quantized KV cache
 (already in this config), or a different serving engine (vLLM/SGLang) if you
@@ -155,7 +157,7 @@ LLAMA_STARTUP_TIMEOUT_SECONDS=600     # default 120 is too short for a 17 GB loa
 LLAMA_CACHE_DIR=/runpod-volume/huggingface-cache/hub
 LLAMA_SERVER_HOST=0.0.0.0
 LLAMA_OPENAI_BASE_URL=http://localhost:3098/v1/
-LLAMA_OPENAI_API_KEY=unused
+LLAMA_OPENAI_API_KEY=unused         # client-side only — NOT llama-server auth, see §9
 
 # --- do NOT set ---
 # LLAMA_MMPROJ_PATH / LLAMA_MMPROJ_URL — mutually exclusive with
@@ -235,9 +237,9 @@ things that must be **absent**, not flags to add:
 - `--no-webui` set, so no interactive surface is exposed.
 - No `-hf` in the args — with cached mode on, this both errors out and would
   reintroduce a runtime download.
-- The `unsloth/gemma-3-270m-it-GGUF` default in `LLAMA_SERVER_CMD_ARGS` is
-  fully replaced. If the log shows a 270M gemma loading, your env var did not
-  apply.
+- `LLAMA_SERVER_CMD_ARGS` actually reached the worker. If the log shows a 270M
+  gemma loading, it did not, and `launcher.py` fell back to its
+  `-hf unsloth/gemma-3-270m-it-GGUF:IQ2_XXS` default.
 
 ---
 
@@ -318,3 +320,94 @@ Failure modes worth naming:
 | Worker exits code 1 at startup | launcher validation — re-read the rules in §4 |
 | `llama-server did not start within N seconds` | `LLAMA_STARTUP_TIMEOUT_SECONDS` still at its 120 s default |
 | Requests queue instead of running in parallel | expected; `MAX_CONCURRENCY=1` is deliberate |
+
+---
+
+## 9. Web UI exposure and authentication
+
+Short answer: **the web UI is off and unreachable, and no llama-server API key
+is set.** The endpoint's only authentication is RunPod's.
+
+### 9.1 — Web UI
+
+Upstream default is `--ui, --webui, --no-ui, --no-webui` → *enabled*
+(env `LLAMA_ARG_UI`). §4 passes `--no-webui`, so the UI is not built into the
+running server at all.
+
+That flag is belt-and-braces, not the actual barrier. A queue-based serverless
+endpoint routes no inbound traffic to the container: requests arrive at
+`api.runpod.ai/v2/<ENDPOINT_ID>/run*`, RunPod hands them to `handler.py`, and
+the handler proxies to `http://localhost:3098/v1/`. There is no public route to
+`/` — nothing outside the container can reach port 3098 regardless of the flag.
+
+Two things would change that, and neither is in this configuration:
+
+- The endpoint setting **Expose HTTP/TCP ports** (off by default) publishes the
+  worker's IP and port for direct external traffic. Leave it off. This worker is
+  a queue handler, not a load-balancing worker, so turning it on gains nothing.
+- Running this image on a **Pod** instead of a serverless endpoint. Note that
+  `LLAMA_SERVER_HOST=0.0.0.0` means llama-server listens on every container
+  interface, not just loopback — inert while no port is published, but on a Pod
+  with an exposed HTTP port that is a fully open, unauthenticated server. If you
+  ever move this to a Pod, set an API key first (§9.3).
+
+### 9.2 — `LLAMA_OPENAI_API_KEY` is not server authentication
+
+This is the most common misreading of the worker's env list. The variable is
+read in exactly one place — `engine.py`:
+
+```python
+base_url=os.getenv("LLAMA_OPENAI_BASE_URL", "http://localhost:3098/v1/"),
+api_key=os.getenv("LLAMA_OPENAI_API_KEY", "unused"),
+```
+
+It is the *client* credential the worker's OpenAI SDK object is constructed
+with, and the SDK refuses to instantiate with an empty one — hence the
+placeholder. It becomes an `Authorization: Bearer unused` header on the
+container-local hop. The hub.json description says as much: *"API key for the
+local OpenAI client. llama-server does not require one by default."*
+
+### 9.3 — llama-server has no key, and how to give it one
+
+`--api-key KEY` (env `LLAMA_API_KEY`) is **default: none**, and neither §4 nor
+the launcher sets it — `launcher.py` injects only `--host` and `--port 3098`.
+So llama-server accepts every request on 3098 unauthenticated and ignores the
+`Bearer unused` header entirely. With no port published, the only clients on
+that interface are the handler and anything else in the same container, so this
+is acceptable as configured.
+
+If you want the local hop authenticated anyway, set **both** halves to the same
+secret — llama-server picks its side up from the environment, so nothing goes
+into `LLAMA_SERVER_CMD_ARGS`:
+
+```bash
+LLAMA_API_KEY=<secret>          # read by llama-server → same as --api-key
+LLAMA_OPENAI_API_KEY=<secret>   # read by the handler's OpenAI client
+```
+
+Set only the first and every request 401s with
+`{"error": {"code": 401, "message": "Invalid API Key", ...}}`; `GET /health` is
+the one public route. Setting only the second changes nothing.
+
+### 9.4 — The authentication that does apply
+
+Callers authenticate to RunPod, not to llama.cpp:
+
+```
+Authorization: Bearer $RUNPOD_API_KEY   →   api.runpod.ai/v2/<ENDPOINT_ID>/runsync
+```
+
+That header is the perimeter. Scope the key to the endpoint and rotate it in
+the RunPod console; anyone holding it can invoke the model, and no llama.cpp
+setting constrains that.
+
+### 9.5 — Related surfaces, all off
+
+| Surface | State | Why |
+| --- | --- | --- |
+| Web UI | disabled | `--no-webui` (§4), and no public route regardless |
+| CORS | irrelevant | no browser ever reaches 3098; llama.cpp's permissive default reflects any `Origin`, which only matters on a published port |
+| `--tools` / `--agent` | not set | these expose filesystem read/write over the API — never enable them on a shared endpoint |
+| `--ui-mcp-proxy` | not set | upstream default disabled; its own docs warn against untrusted environments |
+| `--slot-save-path` | not set | slot save/restore endpoints stay disabled (§6) |
+| `--path` | not set | no static file serving |
