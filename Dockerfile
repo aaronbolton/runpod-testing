@@ -1,9 +1,8 @@
 # llama.cpp worker for RunPod Serverless.
 #
-# The base tag must postdate the model you intend to run: llama.cpp gains
-# architecture support over time, and the Hub's prebuilt workers pull a mutable
-# `server-cuda` tag that was resolved whenever their image happened to be built.
-# b10430 is the build Qwen3.8-27B's GGUF was quantized with; b10588 is newer.
+# The base tag must postdate any model architecture you intend to run: llama.cpp
+# gains architecture support over time, and pulling the mutable `server-cuda` tag
+# means the image silently inherits whatever llama.cpp existed on build day.
 ARG LLAMA_TAG=server-cuda-b10588
 FROM ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
 
@@ -23,7 +22,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 COPY requirements.txt /worker/requirements.txt
 RUN pip install -r /worker/requirements.txt
 
-COPY src/ /worker/
+COPY handler.py server.py /worker/
 WORKDIR /worker
 
-ENTRYPOINT ["python", "-u", "main.py"]
+ENTRYPOINT ["python", "-u", "handler.py"]

@@ -1,12 +1,21 @@
-"""RunPod handler: proxies OpenAI-shaped jobs to the local llama-server."""
+"""RunPod Serverless handler for llama.cpp.
+
+Brings up llama-server, then proxies each job to its OpenAI-compatible routes.
+"""
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Iterator
+
+import runpod
 
 import server
 
@@ -87,3 +96,40 @@ def handler(job: dict[str, Any]) -> Iterator[dict[str, Any]]:
         yield _error(exc)
     except (urllib.error.URLError, OSError) as exc:
         yield {"error": {"message": f"llama-server unreachable: {exc}"}}
+
+
+def _watchdog(proc) -> None:
+    """Exit the worker if llama-server dies, so RunPod recycles it.
+
+    Without this the handler would keep accepting jobs and failing every one.
+    """
+    while True:
+        code = proc.poll()
+        if code is not None:
+            print(f"worker: llama-server exited with code {code}, stopping", flush=True)
+            os._exit(1)
+        time.sleep(5)
+
+
+def main() -> None:
+    try:
+        proc = server.start()
+    except Exception as exc:
+        print(f"worker: startup failed: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
+
+    atexit.register(proc.terminate)
+    threading.Thread(target=_watchdog, args=(proc,), daemon=True).start()
+
+    concurrency = int(os.environ.get("MAX_CONCURRENCY", "1"))
+    runpod.serverless.start(
+        {
+            "handler": handler,
+            "return_aggregate_stream": True,
+            "concurrency_modifier": lambda _current: concurrency,
+        }
+    )
+
+
+if __name__ == "__main__":
+    main()

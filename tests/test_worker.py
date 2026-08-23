@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import handler  # noqa: E402
 import server  # noqa: E402
@@ -37,7 +37,7 @@ class Argv(unittest.TestCase):
     def setUp(self):
         for key in (
             "MODEL_PATH", "MMPROJ_PATH", "MODEL_REPO",
-            "MODEL_FILE", "MMPROJ_FILE", "LLAMA_ARGS",
+            "MODEL_FILE", "MMPROJ_FILE", "LLAMA_ARGS", "HF_MODEL",
         ):
             os.environ.pop(key, None)
 
@@ -65,6 +65,17 @@ class Argv(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.build_argv()
         os.environ["MODEL_REPO"] = "org/name"
+        with self.assertRaises(ValueError):
+            server.build_argv()
+
+    def test_hf_model_downloads(self):
+        os.environ["HF_MODEL"] = "unsloth/gemma-3-270m-it-GGUF:Q6_K"
+        argv = server.build_argv()
+        self.assertEqual(argv[1:3], ["-hf", "unsloth/gemma-3-270m-it-GGUF:Q6_K"])
+
+    def test_two_sources_are_rejected(self):
+        os.environ["MODEL_PATH"] = "/models/x.gguf"
+        os.environ["HF_MODEL"] = "org/name:Q4_K_M"
         with self.assertRaises(ValueError):
             server.build_argv()
 

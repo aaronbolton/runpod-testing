@@ -1,0 +1,44 @@
+{
+  "tests": [
+    {
+      "name": "chat_completion",
+      "input": {
+        "messages": [{ "role": "user", "content": "Reply with the single word: ready" }],
+        "max_tokens": 16,
+        "temperature": 0
+      },
+      "timeout": 600000
+    },
+    {
+      "name": "text_completion",
+      "input": {
+        "prompt": "The capital of France is",
+        "max_tokens": 8,
+        "temperature": 0
+      },
+      "timeout": 300000
+    },
+    {
+      "name": "explicit_route",
+      "input": {
+        "openai_route": "/v1/chat/completions",
+        "openai_input": {
+          "messages": [{ "role": "user", "content": "Say hi" }],
+          "max_tokens": 8
+        }
+      },
+      "timeout": 300000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "allowedCudaVersions": ["12.8", "13.0"],
+    "env": [
+      { "key": "HF_MODEL", "value": "unsloth/gemma-3-270m-it-GGUF:Q6_K" },
+      { "key": "LLAMA_ARGS", "value": "--ctx-size 4096 --parallel 1 -ngl all --no-webui" },
+      { "key": "STARTUP_TIMEOUT", "value": "600" },
+      { "key": "MAX_CONCURRENCY", "value": "1" }
+    ]
+  }
+}

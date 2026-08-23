@@ -1,4 +1,4 @@
-"""Resolve the model from RunPod's cache and run llama-server as a subprocess.
+"""Resolve a GGUF model and run llama-server as a subprocess.
 
 llama-server is bound to loopback: nothing outside the container talks to it,
 only the handler in this same process.
@@ -21,7 +21,7 @@ PORT = int(os.environ.get("LLAMA_PORT", "8080"))
 BASE_URL = f"http://{HOST}:{PORT}"
 DEFAULT_CACHE = "/runpod-volume/huggingface-cache/hub"
 
-# Built by this module from MODEL_* / MMPROJ_*. Passing them again in LLAMA_ARGS
+# Built by this module from the model settings. Passing them again in LLAMA_ARGS
 # is a configuration error, not something to silently merge.
 RESERVED = {
     "-m", "--model", "-hf", "--hf-repo", "-hfr",
@@ -63,39 +63,52 @@ def _pick(snapshot: Path, filename: str, label: str) -> str:
     raise FileNotFoundError(f"{label}={filename!r} is not in {snapshot}. Present: {present}")
 
 
+def _model_flags() -> list[str]:
+    """One of three sources: the RunPod cache, a path on disk, or -hf download."""
+    repo = os.environ.get("MODEL_REPO")
+    path = os.environ.get("MODEL_PATH")
+    hf = os.environ.get("HF_MODEL")
+
+    chosen = [n for n, v in (("MODEL_REPO", repo), ("MODEL_PATH", path), ("HF_MODEL", hf)) if v]
+    if len(chosen) > 1:
+        raise ValueError(f"Set only one model source, got {chosen}.")
+    if not chosen:
+        raise ValueError(
+            "Set MODEL_REPO + MODEL_FILE to use RunPod's model cache, MODEL_PATH for "
+            "a file already on disk, or HF_MODEL to download at startup."
+        )
+
+    if hf:
+        # llama.cpp downloads this itself and picks up a projector automatically.
+        return ["-hf", hf]
+
+    if path:
+        flags = ["-m", path]
+        mmproj = os.environ.get("MMPROJ_PATH")
+        return flags + ["--mmproj", mmproj] if mmproj else flags
+
+    model_file = os.environ.get("MODEL_FILE")
+    if not model_file:
+        raise ValueError("MODEL_REPO is set but MODEL_FILE is not — name the .gguf inside the repo.")
+
+    snapshot = _snapshot(repo, Path(os.environ.get("HF_CACHE_DIR", DEFAULT_CACHE)))
+    flags = ["-m", _pick(snapshot, model_file, "MODEL_FILE")]
+    mmproj_file = os.environ.get("MMPROJ_FILE")
+    if mmproj_file:
+        flags += ["--mmproj", _pick(snapshot, mmproj_file, "MMPROJ_FILE")]
+    return flags
+
+
 def build_argv() -> list[str]:
     extra = shlex.split(os.environ.get("LLAMA_ARGS", ""))
     clashes = sorted({a for a in extra if a in RESERVED})
     if clashes:
         raise ValueError(
             f"LLAMA_ARGS must not set {clashes} — the worker manages those. "
-            "Use MODEL_REPO / MODEL_FILE / MMPROJ_FILE instead."
+            "Use MODEL_REPO / MODEL_FILE / MMPROJ_FILE / MODEL_PATH / HF_MODEL instead."
         )
 
-    model = os.environ.get("MODEL_PATH")
-    mmproj = os.environ.get("MMPROJ_PATH")
-
-    if not model:
-        repo = os.environ.get("MODEL_REPO")
-        if not repo:
-            raise ValueError(
-                "Set MODEL_REPO and MODEL_FILE to load from the RunPod model cache, "
-                "or MODEL_PATH to load a file already on disk."
-            )
-        model_file = os.environ.get("MODEL_FILE")
-        if not model_file:
-            raise ValueError("MODEL_REPO is set but MODEL_FILE is not — name the .gguf inside the repo.")
-
-        snapshot = _snapshot(repo, Path(os.environ.get("HF_CACHE_DIR", DEFAULT_CACHE)))
-        model = _pick(snapshot, model_file, "MODEL_FILE")
-        mmproj_file = os.environ.get("MMPROJ_FILE")
-        if mmproj_file and not mmproj:
-            mmproj = _pick(snapshot, mmproj_file, "MMPROJ_FILE")
-
-    argv = [BIN, "-m", model]
-    if mmproj:
-        argv += ["--mmproj", mmproj]
-    return argv + ["--host", HOST, "--port", str(PORT), *extra]
+    return [BIN, *_model_flags(), "--host", HOST, "--port", str(PORT), *extra]
 
 
 def _healthy() -> bool:
