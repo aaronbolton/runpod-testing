@@ -25,11 +25,18 @@ and nothing else: a pinned base, ~200 lines of worker, and a workflow.
 ## Step 1 — build the image
 
 Push to any branch, or run **Actions → build worker image → Run workflow**. The
-workflow runs the unit tests, then builds and pushes to:
+workflow runs the unit tests, then builds and pushes two tags — the branch name
+and the commit sha:
 
 ```
-ghcr.io/aaronbolton/runpod-testing/llamacpp-worker:latest
+ghcr.io/aaronbolton/runpod-testing/llamacpp-worker:claude-llama-cpp-runpod-deploy-ruo9d4
+ghcr.io/aaronbolton/runpod-testing/llamacpp-worker:sha-<commit>
 ```
+
+`:latest` is only published from the default branch, so until this merges to
+`main` point the endpoint at the branch tag. Pinning the endpoint to a `sha-`
+tag is the safer habit either way: a rebuild then cannot change what your
+workers pull without you deciding to.
 
 To rebuild against a newer llama.cpp, run the workflow manually and set
 `llama_tag` (e.g. `server-cuda-b10600`). Anything ≥ `b10430` — the build the
