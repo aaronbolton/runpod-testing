@@ -125,6 +125,45 @@ Above ~64k, add `-fa on -ctk q8_0 -ctv q8_0`. Flash attention is not optional
 there: llama.cpp will not run a quantized V cache without it, and an f16 cache at
 262,144 needs 17.18 GB and does not fit.
 
+## Testing locally
+
+The image runs outside RunPod, which is the quickest way to check a model loads
+before spending anything on an endpoint. Needs an NVIDIA GPU and
+[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+```bash
+docker compose up --build
+```
+
+```bash
+curl -X POST localhost:8000/runsync \
+  -H 'Content-Type: application/json' \
+  -d '{"input": {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 32}}'
+```
+
+`--rp_serve_api` makes the RunPod SDK serve the handler over HTTP instead of
+polling for jobs, so `/runsync` and `/run` behave as they do in production —
+including `output` being a list.
+
+Edit `docker-compose.yml` to change the model. It defaults to a 270MB gemma via
+`HF_MODEL`; use `MODEL_PATH` with the `./models` mount for a local `.gguf`.
+`MODEL_REPO` is the one thing that will not work locally, since it expects
+RunPod's cache layout under `/runpod-volume`.
+
+Without compose:
+
+```bash
+docker run --gpus all -p 8000:8000 \
+  -e HF_MODEL=unsloth/gemma-3-270m-it-GGUF:Q6_K \
+  -e LLAMA_ARGS="--ctx-size 4096 -ngl all --no-webui" \
+  ghcr.io/aaronbolton/runpod-testing/llamacpp-worker:latest \
+  --rp_serve_api --rp_api_host 0.0.0.0
+```
+
+This is what the published GHCR image is for. RunPod's own Hub-built image is
+locked to their infrastructure and cannot be pulled, so it is the only way to
+run this worker on your own hardware.
+
 ## Development
 
 ```bash
@@ -139,6 +178,7 @@ server.py           model resolution, argv construction, readiness
 Dockerfile          pinned llama.cpp base + this worker
 .runpod/            Hub listing metadata and build-time tests
 tests/              routing and argv checks, no GPU or model needed
+docker-compose.yml  local run with GPU passthrough
 ```
 
 Pushing to any branch runs the tests and verifies the image builds. It is
