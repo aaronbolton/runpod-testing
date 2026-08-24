@@ -92,9 +92,17 @@ the one setting that matters over time: **llama.cpp must be newer than the model
 architecture you want to run.** A build that predates a model fails at load with
 an unknown-architecture error, and no amount of configuration fixes it.
 
-Pick a tag from [ghcr.io/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp)
-and rebuild — via **Actions → build worker image → Run workflow** with a new
-`llama_tag`, or `docker build --build-arg LLAMA_TAG=server-cuda-bXXXXX .`.
+Pick a tag from [ghcr.io/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/pkgs/container/llama.cpp),
+then update it in the place that matches how you deploy:
+
+| Deploying via | To change llama.cpp |
+| --- | --- |
+| **Hub** | Edit the `ARG LLAMA_TAG` default in the `Dockerfile` and cut a release. RunPod builds from the repo and passes no build args, so the default is what ships |
+| **Docker endpoint** (GHCR image) | **Actions → build worker image → Run workflow** with a new `llama_tag` |
+| **Local** | `docker build --build-arg LLAMA_TAG=server-cuda-bXXXXX .` |
+
+The workflow input only affects the GHCR image. It does not change what a Hub
+listing serves — that comes from the `Dockerfile` default at release time.
 
 The same rule covers GPUs: Blackwell (RTX 5090, `sm_120`) needs CUDA ≥ 12.8,
 which the current base satisfies. `no kernel image is available for execution on
@@ -133,8 +141,25 @@ tests/              routing and argv checks, no GPU or model needed
 ```
 
 Pushing to any branch runs the tests, builds the image, and pushes it to GHCR.
-Publishing to the Hub indexes GitHub *releases*, not commits, so cut a release
-when you want the listing to update.
+
+### Two images, two paths
+
+These are independent, and it is worth knowing which one you are running:
+
+- **RunPod's image.** Publishing to the Hub — or deploying via **New Endpoint →
+  GitHub** — makes RunPod clone the repo, build the `Dockerfile` itself, and host
+  the result in `registry.runpod.net`. The Hub indexes GitHub *releases*, not
+  commits, so cut a release when you want the listing to update.
+- **The GHCR image.** The workflow here builds and pushes
+  `ghcr.io/<owner>/<repo>/llamacpp-worker`, for deploying via **New Endpoint →
+  Docker**. The Hub never touches it.
+
+Even if you only ever publish through the Hub, the workflow earns its place as a
+build gate: it catches a broken `Dockerfile` in about four minutes, where a Hub
+build failure is slower and harder to read. What it cannot do is test the worker
+— GitHub runners have no GPU, so a green build proves the image assembles, not
+that it serves. That is what `.runpod/tests.json` is for; RunPod runs it on a
+real GPU at release time.
 
 ## Troubleshooting
 
