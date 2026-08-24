@@ -1,0 +1,39 @@
+# Local testing outside RunPod. Needs an NVIDIA GPU and nvidia-container-toolkit.
+#
+#   docker compose up --build
+#   curl -X POST localhost:8000/runsync -H 'Content-Type: application/json' \
+#     -d '{"input": {"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 32}}'
+
+services:
+  worker:
+    build:
+      context: .
+      args:
+        LLAMA_TAG: server-cuda-b10588
+    image: llamacpp-worker:local
+    ports:
+      - "8000:8000"
+    environment:
+      # Downloads at startup. Swap for MODEL_PATH to use a local .gguf, or
+      # MODEL_REPO + MODEL_FILE if you have mirrored RunPod's cache layout.
+      HF_MODEL: unsloth/gemma-3-270m-it-GGUF:Q6_K
+      LLAMA_ARGS: --ctx-size 4096 --parallel 1 -ngl all --no-webui
+      STARTUP_TIMEOUT: "600"
+      MAX_CONCURRENCY: "1"
+      LLAMA_CACHE: /cache
+    volumes:
+      - llama-cache:/cache
+      # Uncomment alongside MODEL_PATH=/models/<file>.gguf to serve a local model.
+      # - ./models:/models:ro
+    # Serves the handler over HTTP the way RunPod would, instead of polling for jobs.
+    command: ["--rp_serve_api", "--rp_api_host", "0.0.0.0"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  llama-cache:
