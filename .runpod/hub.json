@@ -1,0 +1,160 @@
+{
+  "title": "llama.cpp",
+  "description": "OpenAI-compatible GGUF inference on llama.cpp. Loads models from Runpod's model cache with no download at cold start, supports vision projectors, and pins a known llama.cpp build so model architecture support is explicit.",
+  "type": "serverless",
+  "category": "language",
+  "config": {
+    "runsOn": "GPU",
+    "gpuCount": 1,
+    "gpuIds": "AMPERE_16,AMPERE_24,ADA_24,ADA_32_PRO,AMPERE_48,ADA_48_PRO,AMPERE_80,ADA_80_PRO,HOPPER_141,NVIDIA GeForce RTX 5090",
+    "allowedCudaVersions": ["12.8", "13.0"],
+    "containerDiskInGb": 32,
+    "presets": [
+      {
+        "name": "Cached model (recommended)",
+        "defaults": {
+          "MODEL_REPO": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
+          "MODEL_FILE": "Qwen3.8-27B-Q4_K_M.gguf",
+          "MMPROJ_FILE": "mmproj-F16.gguf",
+          "LLAMA_ARGS": "--ctx-size 32768 --parallel 1 -ngl all --no-webui",
+          "STARTUP_TIMEOUT": 600,
+          "MAX_CONCURRENCY": 1
+        }
+      },
+      {
+        "name": "Long context (32 GB card)",
+        "defaults": {
+          "MODEL_REPO": "Abiray/Qwen3.8-27B-Q4_K_M-GGUF",
+          "MODEL_FILE": "Qwen3.8-27B-Q4_K_M.gguf",
+          "MMPROJ_FILE": "mmproj-F16.gguf",
+          "LLAMA_ARGS": "--ctx-size 262144 --parallel 1 -ngl all -fa on -ctk q8_0 -ctv q8_0 --no-webui",
+          "STARTUP_TIMEOUT": 600,
+          "MAX_CONCURRENCY": 1
+        }
+      },
+      {
+        "name": "Download at startup (no cache)",
+        "defaults": {
+          "HF_MODEL": "unsloth/gemma-3-270m-it-GGUF:Q6_K",
+          "LLAMA_ARGS": "--ctx-size 4096 --parallel 1 -ngl all --no-webui",
+          "STARTUP_TIMEOUT": 600,
+          "MAX_CONCURRENCY": 1
+        }
+      }
+    ],
+    "env": [
+      {
+        "key": "MODEL_REPO",
+        "input": {
+          "type": "huggingface",
+          "name": "Cached model repository",
+          "description": "Hugging Face repo holding the GGUF, e.g. Abiray/Qwen3.8-27B-Q4_K_M-GGUF. Set the endpoint's Model field to the same value so Runpod caches it before the worker starts. Prefer single-quant repos: caching mirrors the whole repo.",
+          "default": "",
+          "required": false
+        }
+      },
+      {
+        "key": "MODEL_FILE",
+        "input": {
+          "name": "GGUF filename",
+          "type": "string",
+          "description": "Name of the .gguf inside the cached repository, e.g. Qwen3.8-27B-Q4_K_M.gguf. Required when using a cached model repository.",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "MMPROJ_FILE",
+        "input": {
+          "name": "Vision projector filename",
+          "type": "string",
+          "description": "Optional multimodal projector inside the same cached repository, e.g. mmproj-F16.gguf. Leave empty for text-only models.",
+          "default": "",
+          "advanced": false
+        }
+      },
+      {
+        "key": "LLAMA_ARGS",
+        "input": {
+          "name": "llama-server arguments",
+          "type": "string",
+          "description": "Passed through to llama-server. The model, projector, host and port are set by the worker and are rejected here. Note that --batch-size 2048, --ubatch-size 512, --jinja and --no-context-shift are already upstream defaults.",
+          "default": "--ctx-size 4096 --parallel 1 -ngl all --no-webui",
+          "advanced": false
+        }
+      },
+      {
+        "key": "HF_MODEL",
+        "input": {
+          "name": "Download model at startup",
+          "type": "string",
+          "description": "Alternative to the cache: a llama.cpp -hf spec such as unsloth/gemma-3-270m-it-GGUF:Q6_K, downloaded on every cold start. Convenient for trials, slow and billed for large models. Mutually exclusive with the cached repository and model path.",
+          "default": "",
+          "advanced": true
+        }
+      },
+      {
+        "key": "MODEL_PATH",
+        "input": {
+          "name": "Model path on disk",
+          "type": "string",
+          "description": "Absolute path to a .gguf already on disk, typically on a network volume. Mutually exclusive with the other two sources.",
+          "default": "",
+          "advanced": true
+        }
+      },
+      {
+        "key": "MMPROJ_PATH",
+        "input": {
+          "name": "Vision projector path on disk",
+          "type": "string",
+          "description": "Absolute path to a projector file, used with the model path above.",
+          "default": "",
+          "advanced": true
+        }
+      },
+      {
+        "key": "STARTUP_TIMEOUT",
+        "input": {
+          "name": "Startup timeout (seconds)",
+          "type": "number",
+          "description": "How long to wait for llama-server to report healthy. Large models load slowly; a 17 GB model needs several minutes.",
+          "min": 30,
+          "max": 3600,
+          "default": 600
+        }
+      },
+      {
+        "key": "MAX_CONCURRENCY",
+        "input": {
+          "name": "Concurrent requests per worker",
+          "type": "number",
+          "description": "Keep at 1 unless --parallel is raised in the arguments above. llama.cpp divides the context across parallel slots.",
+          "min": 1,
+          "max": 64,
+          "default": 1
+        }
+      },
+      {
+        "key": "MODEL_NAME",
+        "input": {
+          "name": "Reported model id",
+          "type": "string",
+          "description": "Overrides the model name echoed in responses. Defaults to whatever llama-server reports.",
+          "default": "",
+          "advanced": true
+        }
+      },
+      {
+        "key": "HF_CACHE_DIR",
+        "input": {
+          "name": "Model cache directory",
+          "type": "string",
+          "description": "Where Runpod places cached Hugging Face snapshots. Only change this if Runpod moves the cache.",
+          "default": "/runpod-volume/huggingface-cache/hub",
+          "advanced": true
+        }
+      }
+    ]
+  }
+}
