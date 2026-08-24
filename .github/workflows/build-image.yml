@@ -1,32 +1,20 @@
 name: build worker image
 
+# Automatic runs are disabled -- they were slowing down deploy testing.
+# Re-enable by restoring the push/pull_request triggers below.
 on:
-  push:
-    branches: ["**"]
-    tags: ["v*"]
-    paths:
-      - Dockerfile
-      - requirements.txt
-      - handler.py
-      - proxy.py
-      - server.py
-      - "tests/**"
-      - ".runpod/**"
-      - .github/workflows/build-image.yml
-  pull_request:
-    paths:
-      - Dockerfile
-      - requirements.txt
-      - handler.py
-      - proxy.py
-      - server.py
-      - "tests/**"
   workflow_dispatch:
     inputs:
       llama_tag:
         description: "llama.cpp image tag to build against (see ghcr.io/ggml-org/llama.cpp)"
         default: server-cuda-b10588
         required: true
+
+# on:
+#   push:
+#     branches: ["**"]
+#     tags: ["v*"]
+#   pull_request:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/llamacpp-worker
