@@ -22,7 +22,7 @@ ENV PATH=/opt/venv/bin:$PATH \
 COPY requirements.txt /worker/requirements.txt
 RUN pip install -r /worker/requirements.txt
 
-COPY handler.py server.py /worker/
+COPY handler.py proxy.py server.py /worker/
 WORKDIR /worker
 
 ENTRYPOINT ["python", "-u", "handler.py"]

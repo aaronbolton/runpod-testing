@@ -133,14 +133,17 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 ```
-handler.py          RunPod handler, entrypoint, llama-server watchdog
+handler.py          entrypoint: starts llama-server, registers the handler
+proxy.py            job -> OpenAI route translation, streaming
 server.py           model resolution, argv construction, readiness
 Dockerfile          pinned llama.cpp base + this worker
 .runpod/            Hub listing metadata and build-time tests
 tests/              routing and argv checks, no GPU or model needed
 ```
 
-Pushing to any branch runs the tests, builds the image, and pushes it to GHCR.
+Pushing to any branch runs the tests and verifies the image builds. It is
+**published** only on a `v*` tag or a manual run — an ordinary push does not
+overwrite anything anyone is running.
 
 ### Two images, two paths
 
@@ -150,9 +153,10 @@ These are independent, and it is worth knowing which one you are running:
   GitHub** — makes RunPod clone the repo, build the `Dockerfile` itself, and host
   the result in `registry.runpod.net`. The Hub indexes GitHub *releases*, not
   commits, so cut a release when you want the listing to update.
-- **The GHCR image.** The workflow here builds and pushes
+- **The GHCR image.** The workflow here builds
   `ghcr.io/<owner>/<repo>/llamacpp-worker`, for deploying via **New Endpoint →
-  Docker**. The Hub never touches it.
+  Docker**. It is pushed on a `v*` tag (as `1.2.3`, `latest` and `sha-…`) or by a
+  manual run. The Hub never touches it.
 
 Even if you only ever publish through the Hub, the workflow earns its place as a
 build gate: it catches a broken `Dockerfile` in about four minutes, where a Hub
@@ -160,6 +164,14 @@ build failure is slower and harder to read. What it cannot do is test the worker
 — GitHub runners have no GPU, so a green build proves the image assembles, not
 that it serves. That is what `.runpod/tests.json` is for; RunPod runs it on a
 real GPU at release time.
+
+## Deploying from GitHub
+
+**New Endpoint → GitHub** scans the repository's default branch for
+`runpod.serverless.start()`. The worker must be merged to `main` — on a feature
+branch the console reports `Could not find runpod.serverless.start() in your
+repo`, and the same applies to Hub submissions, which build from releases cut on
+the default branch.
 
 ## Troubleshooting
 
@@ -173,4 +185,5 @@ real GPU at release time.
 | `LLAMA_ARGS must not set [...]` | a flag the worker builds itself |
 | `Set only one model source` | more than one of `MODEL_REPO` / `MODEL_PATH` / `HF_MODEL` |
 | `llama-server exited with code N, stopping` | it died after startup; the worker exits so RunPod recycles it |
+| `Could not find runpod.serverless.start()` | the worker is not on the default branch — see above |
 | OOM at high context | missing `-fa on`, so the V cache fell back to f16 |

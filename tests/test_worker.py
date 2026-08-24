@@ -7,22 +7,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import handler  # noqa: E402
+import proxy  # noqa: E402
 import server  # noqa: E402
 
 
 class Routing(unittest.TestCase):
     def test_messages_go_to_chat(self):
-        route, body = handler._route({"messages": [{"role": "user", "content": "hi"}]})
-        self.assertEqual(route, handler.CHAT)
+        route, body = proxy._route({"messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(route, proxy.CHAT)
         self.assertIn("messages", body)
 
     def test_prompt_goes_to_completions(self):
-        route, _ = handler._route({"prompt": "hi"})
-        self.assertEqual(route, handler.COMPLETIONS)
+        route, _ = proxy._route({"prompt": "hi"})
+        self.assertEqual(route, proxy.COMPLETIONS)
 
     def test_explicit_route_wins(self):
-        route, body = handler._route(
+        route, body = proxy._route(
             {"openai_route": "/v1/embeddings", "openai_input": {"input": "x"}}
         )
         self.assertEqual(route, "/v1/embeddings")
@@ -30,7 +30,7 @@ class Routing(unittest.TestCase):
 
     def test_empty_input_is_rejected(self):
         with self.assertRaises(ValueError):
-            handler._route({})
+            proxy._route({})
 
 
 class Argv(unittest.TestCase):
