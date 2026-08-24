@@ -44,8 +44,15 @@ threading.Thread(target=watchdog, args=(llama,), daemon=True).start()
 
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "1"))
 
-runpod.serverless.start({
-    "handler": proxy.handler,
-    "return_aggregate_stream": True,
-    "concurrency_modifier": lambda _current: MAX_CONCURRENCY,
-})
+# Exported under the conventional name so the job function is findable here and
+# not only in proxy.py.
+handler = proxy.handler
+
+
+def concurrency_modifier(_current: int) -> int:
+    return MAX_CONCURRENCY
+
+
+# Kept on one line: RunPod's pre-deploy check looks for the call and "handler"
+# together, and does not match them across a line break.
+runpod.serverless.start({"handler": handler, "return_aggregate_stream": True, "concurrency_modifier": concurrency_modifier})
